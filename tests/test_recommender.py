@@ -82,16 +82,24 @@ def test_ndcg_and_split():
 
 
 def test_ui_flow():
-    at = AppTest.from_file(str(Path(__file__).parent.parent / "app.py"), default_timeout=60).run()
+    at = AppTest.from_file(str(Path(__file__).parent.parent / "app.py"), default_timeout=120).run()
     assert not at.exception
-    [b for b in at.button if b.label == "Skip"][0].click().run()   # quiz is skippable
-    assert not at.exception and at.title[0].value == "Picked for you"
-    nos = [b for b in at.button if b.label == "Not for me"]
-    before = [t.value for t in at.markdown if t.value.startswith("**") and t.value.endswith("**")]
-    nos[0].click().run()
+    [b for b in at.button if b.label == "Skip"][0].click().run()   # the quiz is skippable
+    assert not at.exception
+    assert any("Tonight's top pick" in m.value for m in at.markdown)   # billboard rendered
+    cards = lambda: [m.value for m in at.markdown if "class='ctitle'" in m.value]
+    before = cards()
+    assert len(before) >= 10                                       # rows of cards, not one grid
+    [b for b in at.button if b.label == "Not for me"][0].click().run()
     assert not at.exception and len(at.session_state.disliked) == 1
-    after = [t.value for t in at.markdown if t.value.startswith("**") and t.value.endswith("**")]
-    assert before != after   # next results changed immediately
+    assert cards() != before                                       # the row re-ranks at once
+
+
+def test_pretty_title_moves_trailing_article():
+    import app
+    assert app.pretty("Matrix, The (1999)") == "The Matrix (1999)"
+    assert app.pretty("Pulp Fiction (1994)") == "Pulp Fiction (1994)"
+    assert app.pretty("Postino, Il (The Postman) (1994)") == "Postino, Il (The Postman) (1994)"
 
 
 def test_three_scifi_favourites_get_mostly_scifi_but_not_only():

@@ -4,6 +4,8 @@ Mini project for Recommender Systems. Team: Sahil Lenka and Kanishk Shukla.
 
 A Streamlit app that recommends films for a brand-new or returning user. A short skippable quiz replaces the cold start, every pick carries a one-line reason, and a discovery dial sets how adventurous the list is. Like and Not for me re-rank the page immediately.
 
+The interface is a dark browse page: a billboard for tonight's top pick, then horizontally scrolling rows of poster cards. Each card shows why it is there, and "Why this?" opens the score breakdown that produced the pick. It works down to phone width. Posters come from TMDB when a key is set; without one each card gets a generated cover, so nothing is ever a broken image.
+
 ## Run it
 
 Python 3.11 or newer.
