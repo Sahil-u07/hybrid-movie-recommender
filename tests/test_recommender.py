@@ -1,0 +1,101 @@
+from pathlib import Path
+
+import pytest
+from streamlit.testing.v1 import AppTest
+
+import eval as E
+import recommender as R
+
+M = R.get_model()
+
+
+def mid(title):
+    return int(M.movies[M.movies.title == title].movieId.iloc[0])
+
+
+SCIFI = dict(genres=["Sci-Fi", "Action"],
+             liked=[mid(t) for t in ["Matrix, The (1999)", "Inception (2010)", "Blade Runner (1982)",
+                                     "Interstellar (2014)", "Terminator, The (1984)"]],
+             disliked=[])
+
+
+def test_shape_and_exclusions():
+    recs = R.recommend(SCIFI, {"discovery": "different"}, 10)
+    assert len(recs) == 10 and len({r["movie_id"] for r in recs}) == 10
+    assert not {r["movie_id"] for r in recs} & set(SCIFI["liked"])
+    assert {"movie_id", "title", "score", "breakdown", "explanation"} <= set(recs[0])
+
+
+def test_not_for_me_never_returns():
+    first = R.recommend(SCIFI, {}, 10)[0]["movie_id"]
+    again = R.recommend(dict(SCIFI, disliked=[first]), {}, 10)
+    assert first not in {r["movie_id"] for r in again}
+
+
+def test_explanations_only_cite_breakdown_signals():
+    for ctx in [{}, {"mood": "funny"}, {"discovery": "surprise"}]:
+        for r in R.recommend(SCIFI, ctx, 10):
+            assert r["explanation"] and set(r["reasons"]) <= set(r["breakdown"])
+            total = sum(r["breakdown"].values())
+            assert all(r["breakdown"][k] / total >= .10 for k in r["reasons"] if "Ranked well" not in r["explanation"])
+
+
+def test_dial_changes_results():
+    a = {r["movie_id"] for r in R.recommend(SCIFI, {"discovery": "comfort"}, 10)}
+    b = {r["movie_id"] for r in R.recommend(SCIFI, {"discovery": "surprise"}, 10)}
+    assert a != b
+
+
+def test_cold_start_without_any_input():
+    recs = R.recommend(dict(genres=[], liked=[], disliked=[]), {}, 10)
+    assert len(recs) == 10 and recs[0]["stage"] == "cold"
+
+
+def test_avoid_is_hard_filter():
+    recs = R.recommend(dict(genres=[], liked=[], disliked=[], avoid=["Horror"]), {}, 20)
+    assert all("Horror" not in r["genres"] for r in recs)
+
+
+def test_weights_sum_to_one_and_stages():
+    for stage in R.STAGE_W:
+        prep = M.prepare(dict(SCIFI, liked=SCIFI["liked"] * (1 if stage != "established" else 1)))
+        prep.stage = stage
+        assert sum(M.weights(prep).values()) == pytest.approx(1)
+    assert R.stage_of(dict(liked=[], disliked=[])) == "cold"
+    assert R.stage_of(dict(liked=[1] * 19, disliked=[])) == "warming"
+    assert R.stage_of(dict(liked=[1] * 20, disliked=[])) == "established"
+
+
+def test_seen_recently_penalty():
+    top = R.recommend(SCIFI, {}, 1)[0]["movie_id"]
+    prep = M.prepare(SCIFI, {"shown": {top: 3, 1: 2}})
+    assert prep.penalty.sum() == 0.5 and prep.penalty[list(prep.cand).index(M.idx[top])] == 0.5
+
+
+def test_ndcg_and_split():
+    assert E.ndcg([1, 2, 3], {1, 2, 3}) == pytest.approx(1)
+    assert E.ndcg([9, 8], {1}) == 0
+    import pandas as pd
+    r = pd.DataFrame(dict(userId=[1] * 10, movieId=range(10), rating=4.0, timestamp=range(10)))
+    tr, te = E.split(r)
+    assert len(tr) == 8 and te.timestamp.min() > tr.timestamp.max()
+
+
+def test_ui_flow():
+    at = AppTest.from_file(str(Path(__file__).parent.parent / "app.py"), default_timeout=60).run()
+    assert not at.exception
+    [b for b in at.button if b.label == "Skip"][0].click().run()   # quiz is skippable
+    assert not at.exception and at.title[0].value == "Picked for you"
+    nos = [b for b in at.button if b.label == "Not for me"]
+    before = [t.value for t in at.markdown if t.value.startswith("**") and t.value.endswith("**")]
+    nos[0].click().run()
+    assert not at.exception and len(at.session_state.disliked) == 1
+    after = [t.value for t in at.markdown if t.value.startswith("**") and t.value.endswith("**")]
+    assert before != after   # next results changed immediately
+
+
+def test_three_scifi_favourites_get_mostly_scifi_but_not_only():
+    p = dict(genres=["Sci-Fi"], disliked=[],
+             liked=[mid(t) for t in ["Matrix, The (1999)", "Blade Runner (1982)", "Interstellar (2014)"]])
+    n = sum("Sci-Fi" in r["genres"] for r in R.recommend(p, {"discovery": "different"}, 10))
+    assert 5 <= n < 10

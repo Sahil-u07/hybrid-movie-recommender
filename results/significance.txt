@@ -1,0 +1,6 @@
+Hybrid (tuned) vs Popularity only: NDCG diff +0.0307 (+47%), p=0.0000
+Hybrid (tuned) vs Collaborative only: NDCG diff +0.0012 (+1%), p=0.6290
+Hybrid (tuned) vs Content only: NDCG diff +0.0835 (+686%), p=0.0000
+Hybrid (tuned) + MMR vs Hybrid (tuned): NDCG diff -0.0083 (-9%), p=0.0014
+Hybrid (tuned) vs Popularity only: NDCG diff +0.0174 (+27%), p=0.0022
+Hybrid (tuned) vs Content only: NDCG diff +0.0736 (+899%), p=0.0000
