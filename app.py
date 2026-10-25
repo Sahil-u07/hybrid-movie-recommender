@@ -4,6 +4,7 @@ import json
 import re
 import os
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import pandas as pd
@@ -78,6 +79,12 @@ header[data-testid="stHeader"]{background:transparent;}
 .hero{position:relative;border-radius:16px;overflow:hidden;border:1px solid var(--line);
   min-height:330px;display:flex;align-items:flex-end;margin-bottom:.4rem;}
 .hero .wash{position:absolute;inset:0;}
+.hero .wash.img{background-size:cover;background-position:center top;}
+.hero .veil.img{position:absolute;inset:0;
+  background:linear-gradient(90deg,rgba(11,10,15,.97) 0%,rgba(11,10,15,.88) 46%,rgba(11,10,15,.45) 100%);}
+.hero .art{position:absolute;right:30px;top:50%;transform:translateY(-50%);width:160px;aspect-ratio:2/3;
+  border-radius:10px;overflow:hidden;border:1px solid var(--line);box-shadow:0 14px 34px rgba(0,0,0,.6);}
+.hero .art img{width:100%;height:100%;object-fit:cover;display:block;}
 .hero .veil{position:absolute;inset:0;
   background:linear-gradient(90deg,rgba(11,10,15,.95) 0%,rgba(11,10,15,.72) 42%,rgba(11,10,15,.25) 100%);}
 .hero .inner{position:relative;padding:28px 32px;max-width:720px;}
@@ -176,6 +183,7 @@ hr{border-color:var(--line);}
   [class*="st-key-row_"] .stColumn{flex:0 0 150px!important;min-width:150px!important;width:150px!important;}
   .hero .inner{padding:20px;}
   .hero{min-height:280px;}
+  .hero .art{display:none;}
 }
 </style>
 """
@@ -190,18 +198,50 @@ def tmdb_key():
         return None
 
 
-@st.cache_data(show_spinner=False)
-def poster(movie_id):
-    """Poster URL from TMDB, or None when there is no key or no poster (never guessed)."""
-    key, tid = tmdb_key(), LINKS.get(movie_id)
-    if not key or pd.isna(tid):
-        return None
+# Overridable so the artwork path can be tested against a local stand-in for TMDB.
+TMDB_BASE = os.environ.get("TMDB_BASE", "https://api.themoviedb.org/3")
+TMDB_IMG = os.environ.get("TMDB_IMG", "https://image.tmdb.org/t/p")
+
+
+@st.cache_resource
+def _art_cache():
+    """movie_id -> (poster url, backdrop url). Shared: artwork is not per-user."""
+    return {}
+
+
+def _fetch_art(tid, key):
+    """One TMDB lookup. Touches no Streamlit API, so it is safe to run in a thread."""
     try:
-        with urllib.request.urlopen(f"https://api.themoviedb.org/3/movie/{int(tid)}?api_key={key}", timeout=5) as r:
-            path = json.load(r).get("poster_path")
-        return f"https://image.tmdb.org/t/p/w342{path}" if path else None
+        with urllib.request.urlopen(f"{TMDB_BASE}/movie/{tid}?api_key={key}", timeout=6) as r:
+            d = json.load(r)
+        pick = lambda p, size: f"{TMDB_IMG}/{size}{p}" if p else None
+        return pick(d.get("poster_path"), "w342"), pick(d.get("backdrop_path"), "w1280")
     except Exception:
-        return None
+        return None, None
+
+
+def prefetch(movie_ids):
+    """Load every poster a row needs at once; one at a time would stall the first paint."""
+    key = tmdb_key()
+    if not key:
+        return
+    cache = _art_cache()
+    todo = {m: int(LINKS[m]) for m in movie_ids
+            if m not in cache and not pd.isna(LINKS.get(m))}
+    if not todo:
+        return
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for m, art in zip(todo, ex.map(lambda t: _fetch_art(t, key), todo.values())):
+            cache[m] = art
+
+
+def art(movie_id):
+    """(poster, backdrop), each None when there is no key or no image. Never guessed."""
+    return _art_cache().get(movie_id, (None, None))
+
+
+def poster(movie_id):
+    return art(movie_id)[0]
 
 
 def esc(s):
@@ -268,6 +308,7 @@ def card(it, slot, omit=None):
 def show_row(title, subtitle, items, slot, omit=None):
     if not items:
         return
+    prefetch([it["movie_id"] for it in items])
     st.markdown(f"<div class='rowhead'>{esc(title)}</div>"
                 f"<div class='rowsub'>{esc(subtitle)}</div>", unsafe_allow_html=True)
     with st.container(key=f"row_{slot}"):
@@ -277,13 +318,19 @@ def show_row(title, subtitle, items, slot, omit=None):
 
 
 def hero(it):
+    prefetch([it["movie_id"]])
+    pos, back = art(it["movie_id"])
     genres = ", ".join(it["genres"][:3]) or "no genre listed"
     dup = "Rated" in it["explanation"]  # the reason already carries the rating
     rating = ("" if dup or not it["avg_rating"]
               else f"<span class='chip'>{it['avg_rating']:.1f}/5 from {it['n_ratings']} viewers</span>")
     st.markdown(
-        f"<div class='hero'><div class='wash' style='background:{wash(it['movie_id'], '110deg')}'></div>"
-        f"<div class='veil'></div><div class='inner'>"
+        f"<div class='hero'>"
+        + (f"<div class='wash img' style=\"background-image:url('{esc(back or pos)}')\"></div>"
+           f"<div class='veil img'></div>" if (back or pos) else
+           f"<div class='wash' style='background:{wash(it['movie_id'], '110deg')}'></div><div class='veil'></div>")
+        + (f"<div class='art'><img src='{esc(pos)}' alt='{esc(TITLES[it['movie_id']])} poster'></div>" if pos else "")
+        + f"<div class='inner'>"
         f"<div class='kicker'>Tonight's top pick</div>"
         f"<h1>{esc(TITLES[it['movie_id']])}</h1>"
         f"<p class='why'>{esc(it['explanation'])}</p>"
@@ -363,8 +410,10 @@ def home():
         show_row(f"Fits a {mood.lower()} night", "Matched to tonight's mood", more(profile, ctx), "mood")
     show_row("Try something different", "Outside your usual genres, still close to your taste",
              more(profile, {"mood": ctx["mood"], "discovery": "surprise"}), "diff")
-    if tmdb_key():
-        st.caption("This product uses the TMDB API but is not endorsed or certified by TMDB.")
+    st.caption("This product uses the TMDB API but is not endorsed or certified by TMDB."
+               if tmdb_key() else
+               "Covers are generated. For real posters, add a free TMDB API key as TMDB_API_KEY "
+               "in the app's secrets (Manage app, Settings, Secrets).")
 
 
 def profile_page():

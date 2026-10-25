@@ -107,3 +107,26 @@ def test_three_scifi_favourites_get_mostly_scifi_but_not_only():
              liked=[mid(t) for t in ["Matrix, The (1999)", "Blade Runner (1982)", "Interstellar (2014)"]])
     n = sum("Sci-Fi" in r["genres"] for r in R.recommend(p, {"discovery": "different"}, 10))
     assert 5 <= n < 10
+
+
+def test_fetch_art_builds_image_urls(monkeypatch):
+    import io
+
+    import app
+    monkeypatch.setattr(app, "TMDB_IMG", "http://img")
+    monkeypatch.setattr(app.urllib.request, "urlopen",
+                        lambda url, timeout=0: io.BytesIO(b'{"poster_path":"/p.jpg","backdrop_path":"/b.jpg"}'))
+    assert app._fetch_art(1, "k") == ("http://img/w342/p.jpg", "http://img/w1280/b.jpg")
+
+
+def test_fetch_art_survives_a_film_with_no_images_and_a_dead_tmdb(monkeypatch):
+    import io
+
+    import app
+    monkeypatch.setattr(app.urllib.request, "urlopen", lambda url, timeout=0: io.BytesIO(b"{}"))
+    assert app._fetch_art(1, "k") == (None, None)
+
+    def boom(*a, **k):
+        raise OSError("tmdb down")
+    monkeypatch.setattr(app.urllib.request, "urlopen", boom)
+    assert app._fetch_art(1, "k") == (None, None)

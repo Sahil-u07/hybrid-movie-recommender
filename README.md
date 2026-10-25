@@ -17,7 +17,9 @@ pip install -r requirements.txt
 streamlit run app.py
 ```
 
-The MovieLens data is already in `data/`, so nothing is downloaded. Posters are optional: set a `TMDB_API_KEY` environment variable (or in `.streamlit/secrets.toml`) and cards show TMDB posters. Without a key they show a plain title card.
+The MovieLens data is already in `data/`, so nothing is downloaded.
+
+**Film posters.** Without a key the app draws a generated cover for every film, so nothing is ever a broken image. For real posters, get a free TMDB API key (themoviedb.org, Settings, API) and set it as `TMDB_API_KEY`: locally as an environment variable or in `.streamlit/secrets.toml`, and on Streamlit Community Cloud under Manage app, Settings, Secrets, as `TMDB_API_KEY = "your-key"`. Every film in `links.csv` carries its TMDB id, so the lookup is exact rather than a title search. Posters for a row are fetched in parallel and cached, and the top pick also gets TMDB's wide backdrop behind it.
 
 Other commands:
 
