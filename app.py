@@ -209,6 +209,7 @@ WIKI_UA = ("HybridMovieRecommender/1.0 (student project; "
            "https://github.com/Sahil-u07/hybrid-movie-recommender)")
 # Drop a parenthetical that is not the year: "Seven (a.k.a. Se7en) (1995)" -> "Seven (1995)".
 _ALIAS = re.compile(r"\s*\((?!\d{4}\))[^)]*\)")
+_YEAR = re.compile(r"\((\d{4})\)\s*$")
 
 
 @st.cache_resource
@@ -228,26 +229,41 @@ def _fetch_art(tid, key):
         return None, None
 
 
-def wiki_query(title):
-    """"Seven (a.k.a. Se7en) (1995)" -> "Seven 1995 film", which Wikipedia search resolves."""
-    t = _ALIAS.sub("", title).replace("(", "").replace(")", "")
-    return f"{' '.join(t.split())} film"
+def wiki_candidates(title):
+    """Article titles to try, most specific first. Wikipedia's own search is not reliable here:
+    it answered "Pulp Fiction 1994 film" with the soundtrack album and Terminator 2 with a
+    list of video games, so ask for exact articles instead of guessing from a ranked search."""
+    base = _ALIAS.sub("", title).strip()
+    year = _YEAR.search(base)
+    if year:
+        base = base[:year.start()].strip()
+    names = [f"{base} ({year.group(1)} film)"] if year else []
+    return names + [f"{base} (film)", base]
 
 
-def _fetch_wiki(title):
-    """Lead image of the film's English Wikipedia article. No key, but no wide backdrop either."""
-    q = urllib.parse.urlencode({
-        "action": "query", "generator": "search", "gsrsearch": wiki_query(title),
-        "gsrlimit": 1, "prop": "pageimages", "piprop": "thumbnail", "pithumbsize": 400,
-        "pilicense": "any", "format": "json"})  # posters are non-free, so "any" is required
-    try:
-        req = urllib.request.Request(f"{WIKI_API}?{q}", headers={"User-Agent": WIKI_UA})
-        with urllib.request.urlopen(req, timeout=6) as r:
-            pages = json.load(r).get("query", {}).get("pages", {})
-        page = next(iter(pages.values()), {})
-        return page.get("thumbnail", {}).get("source"), None
-    except Exception:
-        return None, None
+def _fetch_wiki(titles):
+    """{film title: poster url or None} for a whole row in one request. No wide backdrop."""
+    wanted = {t: wiki_candidates(t) for t in titles}
+    flat = list(dict.fromkeys(c for cs in wanted.values() for c in cs if "|" not in c))
+    thumb, alias = {}, {}
+    for i in range(0, len(flat), 50):  # the API takes at most 50 titles per request
+        q = urllib.parse.urlencode({
+            "action": "query", "titles": "|".join(flat[i:i + 50]), "prop": "pageimages",
+            "piprop": "thumbnail", "pithumbsize": 400, "pilicense": "any",  # posters are non-free
+            "redirects": 1, "format": "json"})
+        try:
+            req = urllib.request.Request(f"{WIKI_API}?{q}", headers={"User-Agent": WIKI_UA})
+            with urllib.request.urlopen(req, timeout=8) as r:
+                data = json.load(r).get("query", {})
+        except Exception:
+            continue
+        for page in data.get("pages", {}).values():
+            if "thumbnail" in page:
+                thumb[page["title"]] = page["thumbnail"]["source"]
+        for hop in data.get("normalized", []) + data.get("redirects", []):
+            alias[hop["from"]] = hop["to"]
+    find = lambda c: thumb.get(c) or thumb.get(alias.get(c, ""))
+    return {t: next((find(c) for c in cs if find(c)), None) for t, cs in wanted.items()}
 
 
 def prefetch(movie_ids):
@@ -261,14 +277,14 @@ def prefetch(movie_ids):
     key = tmdb_key()
     if key:
         jobs = {m: int(LINKS[m]) for m in todo if not pd.isna(LINKS.get(m))}
-        fn = lambda tid: _fetch_art(tid, key)
+        if jobs:
+            with ThreadPoolExecutor(max_workers=8) as ex:
+                for m, found in zip(jobs, ex.map(lambda tid: _fetch_art(tid, key), jobs.values())):
+                    cache[m] = found
     else:
-        jobs = {m: TITLES[m] for m in todo}
-        fn = _fetch_wiki
-    if jobs:
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            for m, found in zip(jobs, ex.map(fn, jobs.values())):
-                cache[m] = found
+        found = _fetch_wiki([TITLES[m] for m in todo])
+        for m in todo:
+            cache[m] = (found.get(TITLES[m]), None)
     for m in todo:
         cache.setdefault(m, (None, None))  # a miss is cached too, or every rerun retries it
 
@@ -336,8 +352,10 @@ def card(it, slot, omit=None):
         f"<div class='ctitle'>{esc(TITLES[m])}</div>"
         f"<div class='cgen'>{esc(', '.join(it['genres'][:2]) or 'no genre listed')}</div>"
         f"<div class='cwhy'>{esc(why)}</div></div>", unsafe_allow_html=True)
-    st.button("Like", key=f"{slot}_like_{m}", on_click=like, args=(m,), use_container_width=True)
-    st.button("Not for me", key=f"{slot}_no_{m}", on_click=dislike, args=(m,), use_container_width=True)
+    st.button("Like", key=f"{slot}_like_{m}", on_click=like, args=(m,), use_container_width=True,
+              help=f"Like {TITLES[m]}")
+    st.button("Not for me", key=f"{slot}_no_{m}", on_click=dislike, args=(m,), use_container_width=True,
+              help=f"Hide {TITLES[m]} and re-rank")
     with st.expander("Why this?"):
         st.markdown(bars_html(it["breakdown"]), unsafe_allow_html=True)
         st.caption(f"Score {it['score']:.2f} · {it['n_ratings']} ratings")
@@ -425,6 +443,10 @@ def home():
     ctx = {"mood": mood.lower() if mood else None, "discovery": dial}
     profile = dict(genres=ss.genres, liked=ss.liked, disliked=ss.disliked)
     main = MODEL.recommend(profile, ctx, 11)
+    if not main:
+        st.info("Nothing left to recommend. Clear some of your Not for me choices on the "
+                "My taste page to get picks back.")
+        return
     hero(main[0])
     taken = [it["movie_id"] for it in main]
 

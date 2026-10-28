@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -133,27 +134,36 @@ def test_fetch_art_survives_a_film_with_no_images_and_a_dead_tmdb(monkeypatch):
     assert app._fetch_art(1, "k") == (None, None)
 
 
-def test_wiki_query_drops_aliases_and_keeps_the_year():
+def test_wiki_candidates_are_ordered_most_specific_first():
     import app
-    assert app.wiki_query("The Matrix (1999)") == "The Matrix 1999 film"
-    assert app.wiki_query("Seven (a.k.a. Se7en) (1995)") == "Seven 1995 film"
-    assert app.wiki_query("Raiders of the Lost Ark (Indiana Jones and the Raiders "
-                          "of the Lost Ark) (1981)") == "Raiders of the Lost Ark 1981 film"
+    assert app.wiki_candidates("The Matrix (1999)") == [
+        "The Matrix (1999 film)", "The Matrix (film)", "The Matrix"]
+    assert app.wiki_candidates("Seven (a.k.a. Se7en) (1995)")[0] == "Seven (1995 film)"
+    assert app.wiki_candidates("No Year Here") == ["No Year Here (film)", "No Year Here"]
 
 
-def test_fetch_wiki_reads_the_lead_image_and_survives_a_film_with_none(monkeypatch):
+def test_fetch_wiki_prefers_the_specific_article_and_follows_redirects(monkeypatch):
     import io
 
     import app
-    hit = b'{"query":{"pages":{"1":{"title":"The Matrix","thumbnail":{"source":"http://i/m.jpg"}}}}}'
-    monkeypatch.setattr(app.urllib.request, "urlopen", lambda req, timeout=0: io.BytesIO(hit))
-    assert app._fetch_wiki("The Matrix (1999)") == ("http://i/m.jpg", None)
+    body = json.dumps({"query": {
+        "redirects": [{"from": "The Matrix (film)", "to": "The Matrix"}],
+        "pages": {
+            "1": {"title": "The Matrix", "thumbnail": {"source": "http://i/matrix.jpg"}},
+            "2": {"title": "Fargo (1996 film)", "thumbnail": {"source": "http://i/fargo.jpg"}},
+            "3": {"title": "Gone (film)"},
+        }}}).encode()
+    monkeypatch.setattr(app.urllib.request, "urlopen", lambda req, timeout=0: io.BytesIO(body))
+    got = app._fetch_wiki(["The Matrix (1999)", "Fargo (1996)", "Gone (2012)"])
+    assert got["Fargo (1996)"] == "http://i/fargo.jpg"      # exact year article wins
+    assert got["The Matrix (1999)"] == "http://i/matrix.jpg"  # reached through the redirect
+    assert got["Gone (2012)"] is None                        # an article with no image
 
-    monkeypatch.setattr(app.urllib.request, "urlopen",
-                        lambda req, timeout=0: io.BytesIO(b'{"query":{"pages":{}}}'))
-    assert app._fetch_wiki("Nothing Here (1899)") == (None, None)
+
+def test_fetch_wiki_survives_wikipedia_being_down(monkeypatch):
+    import app
 
     def boom(*a, **k):
         raise OSError("wikipedia down")
     monkeypatch.setattr(app.urllib.request, "urlopen", boom)
-    assert app._fetch_wiki("The Matrix (1999)") == (None, None)
+    assert app._fetch_wiki(["The Matrix (1999)"]) == {"The Matrix (1999)": None}
