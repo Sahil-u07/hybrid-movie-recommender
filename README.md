@@ -19,7 +19,9 @@ streamlit run app.py
 
 The MovieLens data is already in `data/`, so nothing is downloaded.
 
-**Film posters.** Without a key the app draws a generated cover for every film, so nothing is ever a broken image. For real posters, get a free TMDB API key (themoviedb.org, Settings, API) and set it as `TMDB_API_KEY`: locally as an environment variable or in `.streamlit/secrets.toml`, and on Streamlit Community Cloud under Manage app, Settings, Secrets, as `TMDB_API_KEY = "your-key"`. Every film in `links.csv` carries its TMDB id, so the lookup is exact rather than a title search. Posters for a row are fetched in parallel and cached, and the top pick also gets TMDB's wide backdrop behind it.
+**Film posters.** Out of the box the app pulls each film's poster from its English Wikipedia article, which needs no API key or signup. These are non-free images that Wikipedia hosts under fair use, so for anything beyond a course demo use TMDB instead: it licenses artwork for exactly this and is free for non-commercial use. Set a TMDB key as `TMDB_API_KEY` (an environment variable, or `.streamlit/secrets.toml` locally, or Manage app, Settings, Secrets on Streamlit Community Cloud) and the app switches to it, matching on the TMDB id in `links.csv` rather than searching by title, and adding a wide backdrop behind the top pick. A film with no image found anywhere falls back to a generated cover, so nothing is ever a broken image.
+
+Artwork for a row is fetched in parallel and cached, including misses. `ARTWORK=off` skips the lookups entirely, which is how the tests stay offline.
 
 Other commands:
 

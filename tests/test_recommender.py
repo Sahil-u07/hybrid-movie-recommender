@@ -81,7 +81,8 @@ def test_ndcg_and_split():
     assert len(tr) == 8 and te.timestamp.min() > tr.timestamp.max()
 
 
-def test_ui_flow():
+def test_ui_flow(monkeypatch):
+    monkeypatch.setenv("ARTWORK", "off")   # no poster lookups from the test suite
     at = AppTest.from_file(str(Path(__file__).parent.parent / "app.py"), default_timeout=120).run()
     assert not at.exception
     [b for b in at.button if b.label == "Skip"][0].click().run()   # the quiz is skippable
@@ -130,3 +131,29 @@ def test_fetch_art_survives_a_film_with_no_images_and_a_dead_tmdb(monkeypatch):
         raise OSError("tmdb down")
     monkeypatch.setattr(app.urllib.request, "urlopen", boom)
     assert app._fetch_art(1, "k") == (None, None)
+
+
+def test_wiki_query_drops_aliases_and_keeps_the_year():
+    import app
+    assert app.wiki_query("The Matrix (1999)") == "The Matrix 1999 film"
+    assert app.wiki_query("Seven (a.k.a. Se7en) (1995)") == "Seven 1995 film"
+    assert app.wiki_query("Raiders of the Lost Ark (Indiana Jones and the Raiders "
+                          "of the Lost Ark) (1981)") == "Raiders of the Lost Ark 1981 film"
+
+
+def test_fetch_wiki_reads_the_lead_image_and_survives_a_film_with_none(monkeypatch):
+    import io
+
+    import app
+    hit = b'{"query":{"pages":{"1":{"title":"The Matrix","thumbnail":{"source":"http://i/m.jpg"}}}}}'
+    monkeypatch.setattr(app.urllib.request, "urlopen", lambda req, timeout=0: io.BytesIO(hit))
+    assert app._fetch_wiki("The Matrix (1999)") == ("http://i/m.jpg", None)
+
+    monkeypatch.setattr(app.urllib.request, "urlopen",
+                        lambda req, timeout=0: io.BytesIO(b'{"query":{"pages":{}}}'))
+    assert app._fetch_wiki("Nothing Here (1899)") == (None, None)
+
+    def boom(*a, **k):
+        raise OSError("wikipedia down")
+    monkeypatch.setattr(app.urllib.request, "urlopen", boom)
+    assert app._fetch_wiki("The Matrix (1999)") == (None, None)

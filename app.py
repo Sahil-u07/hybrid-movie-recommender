@@ -3,6 +3,7 @@ import html
 import json
 import re
 import os
+import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -80,6 +81,7 @@ header[data-testid="stHeader"]{background:transparent;}
   min-height:330px;display:flex;align-items:flex-end;margin-bottom:.4rem;}
 .hero .wash{position:absolute;inset:0;}
 .hero .wash.img{background-size:cover;background-position:center top;}
+.hero .wash.img.blur{filter:blur(26px) saturate(1.3);transform:scale(1.12);}
 .hero .veil.img{position:absolute;inset:0;
   background:linear-gradient(90deg,rgba(11,10,15,.97) 0%,rgba(11,10,15,.88) 46%,rgba(11,10,15,.45) 100%);}
 .hero .art{position:absolute;right:30px;top:50%;transform:translateY(-50%);width:160px;aspect-ratio:2/3;
@@ -198,9 +200,15 @@ def tmdb_key():
         return None
 
 
-# Overridable so the artwork path can be tested against a local stand-in for TMDB.
+# Overridable so the artwork paths can be tested against local stand-ins. ARTWORK=off skips both.
 TMDB_BASE = os.environ.get("TMDB_BASE", "https://api.themoviedb.org/3")
 TMDB_IMG = os.environ.get("TMDB_IMG", "https://image.tmdb.org/t/p")
+WIKI_API = os.environ.get("WIKI_API", "https://en.wikipedia.org/w/api.php")
+ARTWORK = os.environ.get("ARTWORK", "on") != "off"
+WIKI_UA = ("HybridMovieRecommender/1.0 (student project; "
+           "https://github.com/Sahil-u07/hybrid-movie-recommender)")
+# Drop a parenthetical that is not the year: "Seven (a.k.a. Se7en) (1995)" -> "Seven (1995)".
+_ALIAS = re.compile(r"\s*\((?!\d{4}\))[^)]*\)")
 
 
 @st.cache_resource
@@ -220,19 +228,49 @@ def _fetch_art(tid, key):
         return None, None
 
 
+def wiki_query(title):
+    """"Seven (a.k.a. Se7en) (1995)" -> "Seven 1995 film", which Wikipedia search resolves."""
+    t = _ALIAS.sub("", title).replace("(", "").replace(")", "")
+    return f"{' '.join(t.split())} film"
+
+
+def _fetch_wiki(title):
+    """Lead image of the film's English Wikipedia article. No key, but no wide backdrop either."""
+    q = urllib.parse.urlencode({
+        "action": "query", "generator": "search", "gsrsearch": wiki_query(title),
+        "gsrlimit": 1, "prop": "pageimages", "piprop": "thumbnail", "pithumbsize": 400,
+        "pilicense": "any", "format": "json"})  # posters are non-free, so "any" is required
+    try:
+        req = urllib.request.Request(f"{WIKI_API}?{q}", headers={"User-Agent": WIKI_UA})
+        with urllib.request.urlopen(req, timeout=6) as r:
+            pages = json.load(r).get("query", {}).get("pages", {})
+        page = next(iter(pages.values()), {})
+        return page.get("thumbnail", {}).get("source"), None
+    except Exception:
+        return None, None
+
+
 def prefetch(movie_ids):
     """Load every poster a row needs at once; one at a time would stall the first paint."""
-    key = tmdb_key()
-    if not key:
+    if not ARTWORK:
         return
     cache = _art_cache()
-    todo = {m: int(LINKS[m]) for m in movie_ids
-            if m not in cache and not pd.isna(LINKS.get(m))}
+    todo = [m for m in movie_ids if m not in cache]
     if not todo:
         return
-    with ThreadPoolExecutor(max_workers=8) as ex:
-        for m, art in zip(todo, ex.map(lambda t: _fetch_art(t, key), todo.values())):
-            cache[m] = art
+    key = tmdb_key()
+    if key:
+        jobs = {m: int(LINKS[m]) for m in todo if not pd.isna(LINKS.get(m))}
+        fn = lambda tid: _fetch_art(tid, key)
+    else:
+        jobs = {m: TITLES[m] for m in todo}
+        fn = _fetch_wiki
+    if jobs:
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for m, found in zip(jobs, ex.map(fn, jobs.values())):
+                cache[m] = found
+    for m in todo:
+        cache.setdefault(m, (None, None))  # a miss is cached too, or every rerun retries it
 
 
 def art(movie_id):
@@ -326,7 +364,7 @@ def hero(it):
               else f"<span class='chip'>{it['avg_rating']:.1f}/5 from {it['n_ratings']} viewers</span>")
     st.markdown(
         f"<div class='hero'>"
-        + (f"<div class='wash img' style=\"background-image:url('{esc(back or pos)}')\"></div>"
+        + (f"<div class='wash img{'' if back else ' blur'}' style=\"background-image:url('{esc(back or pos)}')\"></div>"
            f"<div class='veil img'></div>" if (back or pos) else
            f"<div class='wash' style='background:{wash(it['movie_id'], '110deg')}'></div><div class='veil'></div>")
         + (f"<div class='art'><img src='{esc(pos)}' alt='{esc(TITLES[it['movie_id']])} poster'></div>" if pos else "")
@@ -412,8 +450,8 @@ def home():
              more(profile, {"mood": ctx["mood"], "discovery": "surprise"}), "diff")
     st.caption("This product uses the TMDB API but is not endorsed or certified by TMDB."
                if tmdb_key() else
-               "Covers are generated. For real posters, add a free TMDB API key as TMDB_API_KEY "
-               "in the app's secrets (Manage app, Settings, Secrets).")
+               "Posters come from the films' English Wikipedia articles. Set a TMDB API key as "
+               "TMDB_API_KEY in the app's secrets to use TMDB artwork instead.")
 
 
 def profile_page():
