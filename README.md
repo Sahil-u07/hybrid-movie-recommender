@@ -1,6 +1,8 @@
 # Hybrid Movie Recommender
 
-Mini project for Recommender Systems. Team: Sahil Lenka and Kanishk Shukla.
+Mini project for Recommender Systems, Manipal University Jaipur.
+
+Sahil Lenka (2427010391) and Kanishk Shukla (2427010432).
 
 A Streamlit app that recommends films for a brand-new or returning user. A short skippable quiz replaces the cold start, every pick carries a one-line reason, and a discovery dial sets how adventurous the list is. Like and Not for me re-rank the page immediately.
 

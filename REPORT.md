@@ -1,6 +1,8 @@
 # Hybrid Movie Recommender: project report
 
-Sahil Lenka and Kanishk Shukla, Recommender Systems
+Sahil Lenka (2427010391) and Kanishk Shukla (2427010432)
+
+Recommender Systems, Manipal University Jaipur
 
 ## Problem
 
